@@ -1,38 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-宏观指标监控仪表盘 - 适配 Streamlit Cloud 版本
+Created on Sun Mar 22 14:02:54 2026
+
+@author: AAA20
 """
 
 import streamlit as st
 from openbb import obb
+import os
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
 
 # ====================== 基础配置 ======================
 st.set_page_config(page_title="宏观指标监控仪表盘", layout="wide")
 
-# ====================== 读取FRED Key（适配Streamlit Cloud） ======================
-# 优先从Streamlit Secrets读取（云端），其次从环境变量读取（本地）
-def get_fred_api_key():
-    """获取FRED API Key，适配本地/云端环境"""
-    # Streamlit Cloud Secrets配置（推荐）
-    if "FRED_API_KEY" in st.secrets:
-        return st.secrets["FRED_API_KEY"]
-    # 本地环境变量
-    import os
-    return os.getenv("FRED_API_KEY", "")
-
-fred_api_key = get_fred_api_key()
+# ====================== 读取FRED Key ======================
+fred_api_key = os.getenv("FRED_API_KEY")
 if not fred_api_key:
-    st.error("❌ 未读取到FRED API Key！\n"
-             "云端：请在Streamlit Cloud的Secrets中配置 FRED_API_KEY\n"
-             "本地：请设置环境变量 FRED_API_KEY")
+    st.error("❌ 未读取到FRED API Key！请先配置环境变量并重启")
     st.stop()
-
-# 配置OpenBB的FRED API Key
 obb.user.credentials.fred_api_key = fred_api_key
 
 # ====================== 定义指标 ======================
@@ -47,43 +35,32 @@ INDICATORS = {
     "SAHMREALTIME": {"name": "Sahm衰退指标", "desc": ">0.5大概率进入衰退", "color": "#7f7f7f"},
 }
 
-# ====================== 缓存数据（优化云端性能） ======================
-@st.cache_data(ttl=3600, show_spinner="正在缓存宏观数据...")
-def get_macro_data(fred_key):
-    """获取宏观数据，增加错误处理，适配云端"""
+# ====================== 缓存数据 ======================
+@st.cache_data(ttl=3600)
+def get_macro_data():
     data_dict = {}
     # 先拉取全量数据（2018至今）
     for code, cfg in INDICATORS.items():
-        try:
-            # OpenBB调用增加超时和错误处理
-            df = obb.economy.fred_series(
-                symbol=code,
-                start_date="2018-01-01",
-                api_key=fred_key,
-                provider="fred"  # 明确指定provider，避免云端歧义
-            ).to_df()
-            
-            # 适配列名（增强鲁棒性）
-            if not df.empty:
-                # 找到数值列（通常是value或代码名）
-                value_cols = [col for col in df.columns if col.lower() in ["value", code.lower()]]
-                if value_cols:
-                    df.rename(columns={value_cols[0]: cfg["name"]}, inplace=True)
-                elif len(df.columns) >= 1:
-                    df.rename(columns={df.columns[-1]: cfg["name"]}, inplace=True)
-                
-                # 确保索引是日期格式
-                df.index = pd.to_datetime(df.index)
-                # 去空值并保留必要列
-                if cfg["name"] in df.columns:
-                    data_dict[code] = df[[cfg["name"]]].dropna()
-                else:
-                    data_dict[code] = pd.DataFrame()
-            else:
-                data_dict[code] = pd.DataFrame()
-                
-        except Exception as e:
-            st.warning(f"⚠️ 获取 {cfg['name']} ({code}) 数据失败：{str(e)[:100]}")
+        df = obb.economy.fred_series(
+            symbol=code,
+            start_date="2018-01-01",
+            api_key=fred_api_key
+        ).to_df()
+        
+        # 适配列名
+        if "value" in df.columns:
+            df.rename(columns={"value": cfg["name"]}, inplace=True)
+        elif code not in df.columns and len(df.columns) >= 1:
+            df.rename(columns={df.columns[-1]: cfg["name"]}, inplace=True)
+        else:
+            df.rename(columns={code: cfg["name"]}, inplace=True)
+        
+        # 确保索引是日期格式
+        df.index = pd.to_datetime(df.index)
+        # 去空值并保留必要列
+        if cfg["name"] in df.columns:
+            data_dict[code] = df[[cfg["name"]]].dropna()
+        else:
             data_dict[code] = pd.DataFrame()
     return data_dict
 
@@ -92,7 +69,7 @@ def merge_selected_data(selected_codes, data_dict):
     """合并选中的指标数据，对齐日期"""
     df_list = []
     for code in selected_codes:
-        if code in data_dict and not data_dict[code].empty:
+        if not data_dict[code].empty:
             df_list.append(data_dict[code])
     if df_list:
         merged_df = pd.concat(df_list, axis=1, join='outer').sort_index()
@@ -103,13 +80,9 @@ def merge_selected_data(selected_codes, data_dict):
 st.title("📊 宏观指标交互式监控仪表盘")
 st.divider()
 
-# 拉取数据（增加错误处理）
-try:
-    with st.spinner("正在拉取最新宏观数据..."):
-        data_dict = get_macro_data(fred_api_key)
-except Exception as e:
-    st.error(f"❌ 数据拉取失败：{str(e)}")
-    st.stop()
+# 拉取数据
+with st.spinner("正在拉取最新数据..."):
+    data_dict = get_macro_data()
 
 # ----------------------
 # 侧边栏：交互配置（核心）
@@ -117,23 +90,17 @@ except Exception as e:
 with st.sidebar:
     st.header("⚙️ 交互配置")
     
-    # 1. 自定义时间范围（优化空数据处理）
+    # 1. 自定义时间范围
     st.subheader("1. 时间范围")
-    # 获取全量数据的日期范围（增加空值判断）
+    # 获取全量数据的日期范围
     all_dates = []
     for df in data_dict.values():
         if not df.empty:
             all_dates.extend(df.index.tolist())
+    min_date = pd.to_datetime(min(all_dates)) if all_dates else pd.to_datetime("2018-01-01")
+    max_date = pd.to_datetime(max(all_dates)) if all_dates else pd.to_datetime("2026-03-01")
     
-    # 处理无数据的情况
-    if all_dates:
-        min_date = pd.to_datetime(min(all_dates))
-        max_date = pd.to_datetime(max(all_dates))
-    else:
-        min_date = pd.to_datetime("2018-01-01")
-        max_date = pd.to_datetime(datetime.now() - timedelta(days=1))
-    
-    # 时间选择器（优化默认值）
+    # 时间选择器
     start_date = st.date_input(
         "起始日期",
         value=min_date,
@@ -152,24 +119,18 @@ with st.sidebar:
     
     # 2. 指标选择（支持多选，用于叠加）
     st.subheader("2. 指标选择")
-    # 过滤掉无数据的指标
-    valid_indicators = {k: v for k, v in INDICATORS.items() if not data_dict[k].empty}
-    if not valid_indicators:
-        st.warning("⚠️ 暂无有效指标数据")
-        valid_indicators = INDICATORS  # 兜底
-    
     # 单选（单独查看）
     single_code = st.selectbox(
         "单独查看指标",
-        options=list(valid_indicators.keys()),
-        format_func=lambda x: valid_indicators[x]["name"],
+        options=list(INDICATORS.keys()),
+        format_func=lambda x: INDICATORS[x]["name"],
         index=0
     )
     # 多选（叠加对比）
     selected_codes = st.multiselect(
         "叠加对比指标（最多选4个）",
-        options=list(valid_indicators.keys()),
-        format_func=lambda x: valid_indicators[x]["name"],
+        options=list(INDICATORS.keys()),
+        format_func=lambda x: INDICATORS[x]["name"],
         default=[single_code],
         max_selections=4
     )
@@ -185,7 +146,7 @@ with tab1:
     st.caption(INDICATORS[single_code]["desc"])
     
     # 获取该指标数据并筛选时间范围
-    df_single = data_dict.get(single_code, pd.DataFrame())
+    df_single = data_dict[single_code]
     if not df_single.empty:
         # 筛选时间范围
         df_filtered = df_single[
@@ -205,10 +166,6 @@ with tab1:
                     "📅 日期: %{x}<br>" +
                     "📊 数值: %{y:.2f}<br>" +
                     "<extra></extra>"  # 隐藏额外信息
-                ) if single_code != "ICSA" else (
-                    "📅 日期: %{x}<br>" +
-                    "📊 数值: %{y:,.0f}<br>" +
-                    "<extra></extra>"
                 ),
                 name=INDICATORS[single_code]["name"]
             ))
@@ -223,8 +180,8 @@ with tab1:
                 template="plotly_white"
             )
             
-            # 显示图表（适配云端宽度）
-            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
+            # 显示图表
+            st.plotly_chart(fig, use_container_width=True)
             
             # 显示最新数据
             st.subheader("📌 最新数据")
@@ -294,8 +251,8 @@ with tab2:
                 )
             )
             
-            # 显示图表（适配云端）
-            st.plotly_chart(fig, use_container_width=True, config={"responsive": True})
+            # 显示图表
+            st.plotly_chart(fig, use_container_width=True)
             
             # 显示选中指标的最新值汇总
             st.subheader("📌 选中指标最新值")
@@ -313,14 +270,3 @@ with tab2:
 
 st.divider()
 st.caption("💡 核心交互说明：\n1. 鼠标悬停在曲线上可显示「日期+精确数值」；\n2. 侧边栏可自定义时间范围；\n3. 支持单个指标详情/多指标叠加对比；\n4. 图表可缩放、下载、平移。")
-
-# ====================== 云端部署优化 ======================
-# 隐藏Streamlit默认的菜单和页脚（可选）
-hide_streamlit_style = """
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-</style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
