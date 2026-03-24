@@ -1,0 +1,11 @@
+# 核心Web框架
+streamlit>=1.32.0
+# 金融数据库
+openbb>=4.0.0
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+# 交互式绘图
+plotly>=5.18.0
+# 环境变量读取
+python-dotenv>=1.0.0
