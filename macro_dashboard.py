@@ -54,26 +54,45 @@ def get_macro_data():
     data_dict = {}
     # 先拉取全量数据（2018至今）
     for code, cfg in INDICATORS.items():
-        df = obb.economy.fred_series(
-            symbol=code,
-            start_date="2018-01-01",
-            api_key=fred_api_key
-        ).to_df()
-        
-        # 适配列名
-        if "value" in df.columns:
-            df.rename(columns={"value": cfg["name"]}, inplace=True)
-        elif code not in df.columns and len(df.columns) >= 1:
-            df.rename(columns={df.columns[-1]: cfg["name"]}, inplace=True)
-        else:
-            df.rename(columns={code: cfg["name"]}, inplace=True)
-        
-        # 确保索引是日期格式
-        df.index = pd.to_datetime(df.index)
-        # 去空值并保留必要列
-        if cfg["name"] in df.columns:
-            data_dict[code] = df[[cfg["name"]]].dropna()
-        else:
+        try:
+            # ========== 关键修复：OpenBB v4.x 正确的 FRED 调用路径 ==========
+            # 旧版：obb.economy.fred_series → 新版：obb.fred.series
+            response = obb.fred.series(
+                symbol=code,
+                start_date="2018-01-01",
+                # v4.x 不需要手动传 api_key（已通过 credentials 设置）
+                # api_key=fred_api_key  # 这行要删除，避免重复传参报错
+            )
+            
+            # ========== 适配 v4.x 数据返回格式 ==========
+            # OpenBB v4 返回的是 Response 对象，优先用 to_df() 转换
+            if response.status == "success" and not response.results.empty:
+                df = response.to_df()
+            else:
+                st.warning(f"{cfg['name']} ({code}) 无返回数据")
+                data_dict[code] = pd.DataFrame()
+                continue
+            
+            # 适配列名（v4.x FRED 返回的列名是 'value'，和之前逻辑兼容）
+            if "value" in df.columns:
+                df.rename(columns={"value": cfg["name"]}, inplace=True)
+            elif code not in df.columns and len(df.columns) >= 1:
+                df.rename(columns={df.columns[-1]: cfg["name"]}, inplace=True)
+            else:
+                df.rename(columns={code: cfg["name"]}, inplace=True)
+            
+            # 确保索引是日期格式（v4.x 返回的日期列名是 'date'）
+            if "date" in df.columns:
+                df.set_index("date", inplace=True)
+            df.index = pd.to_datetime(df.index)
+            
+            # 去空值并保留必要列
+            if cfg["name"] in df.columns:
+                data_dict[code] = df[[cfg["name"]]].dropna()
+            else:
+                data_dict[code] = pd.DataFrame()
+        except Exception as e:
+            st.warning(f"获取 {cfg['name']} ({code}) 数据失败: {str(e)}")
             data_dict[code] = pd.DataFrame()
     return data_dict
 
