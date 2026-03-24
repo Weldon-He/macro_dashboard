@@ -4,7 +4,6 @@
 """
 import os
 # ====================== 关键修复：禁用OpenBB自动构建 ======================
-# 设置环境变量，跳过OpenBB的自动构建（解决权限问题）
 os.environ["OPENBB_AUTO_BUILD"] = "false"
 os.environ["OPENBB_ENABLE_PROMPT_TOOLKIT"] = "false"
 
@@ -17,10 +16,17 @@ from plotly.subplots import make_subplots
 # 延迟导入OpenBB（先设置环境变量再导入）
 try:
     from openbb import obb
+    # ========== 关键修复：手动加载 FRED 扩展 ==========
+    from openbb_core.app.model.extension import Extension
+    # 加载 FRED 扩展
+    obb.extensions.load(Extension(name="fred"))
     OPENBB_AVAILABLE = True
 except ImportError:
     OPENBB_AVAILABLE = False
-    st.error("❌ 未安装 openbb 库！请检查 requirements.txt")
+    st.error("❌ 未安装 openbb 或 openbb-fred 库！请检查 requirements.txt")
+except Exception as e:
+    OPENBB_AVAILABLE = False
+    st.error(f"❌ OpenBB 初始化失败: {str(e)}")
 
 # ====================== 基础配置 ======================
 st.set_page_config(page_title="宏观指标监控仪表盘", layout="wide")
@@ -31,7 +37,7 @@ if OPENBB_AVAILABLE:
     if not fred_api_key:
         st.error("❌ 未读取到FRED API Key！请先配置环境变量并重启")
         st.stop()
-    # 手动初始化FRED凭证（避免OpenBB自动加载配置）
+    # 手动初始化FRED凭证
     obb.user.credentials.fred_api_key = fred_api_key
 else:
     st.stop()
@@ -55,17 +61,14 @@ def get_macro_data():
     # 先拉取全量数据（2018至今）
     for code, cfg in INDICATORS.items():
         try:
-            # ========== 关键修复：OpenBB v4.x 正确的 FRED 调用路径 ==========
-            # 旧版：obb.economy.fred_series → 新版：obb.fred.series
+            # ========== OpenBB v4.x 正确的 FRED 调用路径 ==========
             response = obb.fred.series(
                 symbol=code,
-                start_date="2018-01-01",
-                # v4.x 不需要手动传 api_key（已通过 credentials 设置）
-                # api_key=fred_api_key  # 这行要删除，避免重复传参报错
+                start_date="2018-01-01"
+                # 不需要传 api_key（已通过 credentials 设置）
             )
             
             # ========== 适配 v4.x 数据返回格式 ==========
-            # OpenBB v4 返回的是 Response 对象，优先用 to_df() 转换
             if response.status == "success" and not response.results.empty:
                 df = response.to_df()
             else:
@@ -73,7 +76,7 @@ def get_macro_data():
                 data_dict[code] = pd.DataFrame()
                 continue
             
-            # 适配列名（v4.x FRED 返回的列名是 'value'，和之前逻辑兼容）
+            # 适配列名
             if "value" in df.columns:
                 df.rename(columns={"value": cfg["name"]}, inplace=True)
             elif code not in df.columns and len(df.columns) >= 1:
@@ -81,7 +84,7 @@ def get_macro_data():
             else:
                 df.rename(columns={code: cfg["name"]}, inplace=True)
             
-            # 确保索引是日期格式（v4.x 返回的日期列名是 'date'）
+            # 确保索引是日期格式
             if "date" in df.columns:
                 df.set_index("date", inplace=True)
             df.index = pd.to_datetime(df.index)
@@ -108,7 +111,7 @@ def merge_selected_data(selected_codes, data_dict):
         return merged_df
     return pd.DataFrame()
 
-# ====================== 主页面 ======================
+# ====================== 主页面（以下代码保持不变） ======================
 st.title("📊 宏观指标交互式监控仪表盘")
 st.divider()
 
